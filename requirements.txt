@@ -1,0 +1,21 @@
+# NCTB Physics Question Generator - Dependencies
+
+# PDF Processing
+pdfplumber>=0.10.0
+
+# OCR Support (for scanned PDFs)
+pdf2image>=1.16.0
+pytesseract>=0.3.10
+Pillow>=10.0.0
+
+# Vector Database
+chromadb>=0.4.0
+
+# OpenAI API (for embeddings and LLM)
+openai>=1.0.0
+
+# Anthropic API (optional - for using Claude)
+anthropic>=0.18.0
+
+# Utilities
+python-dotenv>=1.0.0
