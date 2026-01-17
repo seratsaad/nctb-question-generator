@@ -22,14 +22,25 @@ import re
 # PDF Processing
 import pdfplumber
 
-# OCR Support
+# OCR Support - Try Surya first, fall back to Tesseract
+OCR_ENGINE = None
+SURYA_MODELS = {}
+
 try:
+    from surya.ocr import run_ocr
+    from surya.model.detection.model import load_model as load_det_model, load_processor as load_det_processor
+    from surya.model.recognition.model import load_model as load_rec_model
+    from surya.model.recognition.processor import load_processor as load_rec_processor
     from pdf2image import convert_from_path
-    import pytesseract
-    OCR_AVAILABLE = True
+    from PIL import Image
+    OCR_ENGINE = "surya"
 except ImportError:
-    OCR_AVAILABLE = False
-    print("Note: OCR not available. Install pdf2image and pytesseract for scanned PDF support.")
+    try:
+        from pdf2image import convert_from_path
+        import pytesseract
+        OCR_ENGINE = "tesseract"
+    except ImportError:
+        OCR_ENGINE = None
 
 # Vector Store
 import chromadb
@@ -88,11 +99,13 @@ class PDFProcessor:
         return text
     
     def extract_text_with_ocr(self, pdf_path: str) -> str:
-        """Extract text from scanned PDF using OCR"""
-        if not OCR_AVAILABLE:
-            print("  -> OCR not available. Please install pdf2image and pytesseract.")
-            print("     Run: pip install pdf2image pytesseract")
-            print("     Also install Tesseract OCR on your system.")
+        """Extract text from scanned PDF using OCR (Surya or Tesseract)"""
+        global SURYA_MODELS
+        
+        if OCR_ENGINE is None:
+            print("  -> OCR not available. Please install surya-ocr or pytesseract.")
+            print("     For best results: pip install surya-ocr")
+            print("     Alternative: pip install pytesseract (+ install Tesseract)")
             return ""
         
         text = ""
@@ -106,23 +119,57 @@ class PDFProcessor:
             )
             
             total_pages = len(images)
-            print(f"  -> Processing {total_pages} pages with OCR...")
+            print(f"  -> Processing {total_pages} pages with {OCR_ENGINE.upper()} OCR...")
             
-            for page_num, image in enumerate(images, 1):
-                # Show progress every 10 pages
-                if page_num % 10 == 0 or page_num == 1:
-                    print(f"  -> OCR progress: {page_num}/{total_pages} pages...")
+            if OCR_ENGINE == "surya":
+                # Load Surya models once (lazy loading)
+                if not SURYA_MODELS:
+                    print("  -> Loading Surya OCR models (first time only)...")
+                    SURYA_MODELS['det_processor'] = load_det_processor()
+                    SURYA_MODELS['det_model'] = load_det_model()
+                    SURYA_MODELS['rec_model'] = load_rec_model()
+                    SURYA_MODELS['rec_processor'] = load_rec_processor()
                 
-                # Perform OCR on the image
-                try:
-                    page_text = pytesseract.image_to_string(
-                        image, 
-                        lang=CONFIG["ocr_language"]
+                # Process in batches for efficiency
+                batch_size = 5
+                for batch_start in range(0, total_pages, batch_size):
+                    batch_end = min(batch_start + batch_size, total_pages)
+                    batch_images = [img.convert("RGB") for img in images[batch_start:batch_end]]
+                    
+                    print(f"  -> OCR progress: {batch_start + 1}-{batch_end}/{total_pages} pages...")
+                    
+                    # Run Surya OCR on batch
+                    langs = [["en"]] * len(batch_images)  # English for all pages
+                    results = run_ocr(
+                        batch_images, 
+                        langs,
+                        SURYA_MODELS['det_model'],
+                        SURYA_MODELS['det_processor'],
+                        SURYA_MODELS['rec_model'],
+                        SURYA_MODELS['rec_processor']
                     )
-                    if page_text.strip():
-                        text += f"\n[Page {page_num}]\n{page_text}"
-                except Exception as e:
-                    print(f"  -> Warning: OCR failed on page {page_num}: {e}")
+                    
+                    # Extract text from results
+                    for i, result in enumerate(results):
+                        page_num = batch_start + i + 1
+                        page_text = "\n".join([line.text for line in result.text_lines])
+                        if page_text.strip():
+                            text += f"\n[Page {page_num}]\n{page_text}"
+            
+            else:  # Tesseract fallback
+                for page_num, image in enumerate(images, 1):
+                    if page_num % 10 == 0 or page_num == 1:
+                        print(f"  -> OCR progress: {page_num}/{total_pages} pages...")
+                    
+                    try:
+                        page_text = pytesseract.image_to_string(
+                            image, 
+                            lang=CONFIG["ocr_language"]
+                        )
+                        if page_text.strip():
+                            text += f"\n[Page {page_num}]\n{page_text}"
+                    except Exception as e:
+                        print(f"  -> Warning: OCR failed on page {page_num}: {e}")
             
             print(f"  -> OCR complete! Extracted text from {total_pages} pages.")
             
@@ -464,11 +511,14 @@ class PhysicsRAG:
         print("="*50)
         
         # Check OCR availability
-        if OCR_AVAILABLE:
-            print("✓ OCR is available for scanned PDFs")
+        if OCR_ENGINE == "surya":
+            print("✓ Surya OCR is available (high quality)")
+        elif OCR_ENGINE == "tesseract":
+            print("✓ Tesseract OCR is available (basic quality)")
+            print("  Tip: Install surya-ocr for better results: pip install surya-ocr")
         else:
             print("⚠ OCR not available - scanned PDFs won't be processed")
-            print("  To enable OCR, run: pip install pdf2image pytesseract")
+            print("  To enable OCR, run: pip install surya-ocr pdf2image")
         
         # Create directories if they don't exist
         os.makedirs(CONFIG["textbook_dir"], exist_ok=True)
